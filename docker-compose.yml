@@ -1,0 +1,13 @@
+services:
+  ai_core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai_agent_daly_digest_arxiv:latest
+    platform: linux/arm64
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    stdin_open: true
+    tty: true
