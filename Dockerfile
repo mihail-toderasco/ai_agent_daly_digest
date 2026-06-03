@@ -20,5 +20,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application
 COPY . .
 
-# Default command just keeps the container alive for execution during Phase 1
-CMD ["python"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "80"]
