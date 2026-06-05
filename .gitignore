@@ -3,6 +3,7 @@
 
 # Project-specific
 _reasoning/
+_src/
 
 # Python
 __pycache__/
