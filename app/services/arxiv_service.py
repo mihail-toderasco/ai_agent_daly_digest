@@ -6,8 +6,7 @@ import hashlib
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.arxiv_entry import ArxivEntry
-from app.models.external_query_state import ExternalQueryState
+from app.models import ArxivEntry, ExternalQueryState
 
 
 class ArxivService:

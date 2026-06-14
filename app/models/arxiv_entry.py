@@ -26,6 +26,12 @@ class ArxivEntry(Base):
 
     title: Mapped[str] = mapped_column(Text)
     summary: Mapped[str] = mapped_column(Text)
+
+    deep_research_summary: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
     authors: Mapped[str] = mapped_column(Text)
     categories: Mapped[str] = mapped_column(Text)
     published: Mapped[datetime] = mapped_column(
