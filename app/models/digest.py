@@ -15,7 +15,7 @@ class Digest(Base):
         index=True,
     )
 
-    query_hash: Mapped[str] = mapped_column(
+    query: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
         index=True,
@@ -50,7 +50,7 @@ class Digest(Base):
     __table_args__ = (
         UniqueConstraint(
             "digest_date", 
-            "query_hash", 
+            "query", 
             name="uq_digest_date_query"
         ),
     )
