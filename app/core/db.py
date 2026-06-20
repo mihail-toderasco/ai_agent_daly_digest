@@ -9,7 +9,7 @@ from .config import settings
 
 engine = create_async_engine(
     str(settings.DATABASE_URL),
-    echo=False,
+    echo=(settings.LOG_LEVEL == "DEBUG"),
 )
 
 AsyncSessionLocal = async_sessionmaker(
