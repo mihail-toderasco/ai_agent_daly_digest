@@ -18,23 +18,24 @@ class ResearchSummaryService:
         self.ai_provider = get_ai_provider()
 
     async def generate_entry_summary(self, entry_id: int) -> bool:
-        """Fetch a single entry, request AI analysis, and save the summary."""
+        """Fetch a single entry, request AI analysis with attached PDF, and save the summary."""
         result = await self.db.execute(
             select(ArxivEntry).where(ArxivEntry.id == entry_id)
         )
         entry = result.scalar_one_or_none()
 
-        if not entry or entry.deep_research_summary is not None:
+        if not entry or entry.deep_research_summary:
             return False
 
         document_link = self._document_link(entry.raw)
         if not document_link:
-            logger.warning(f"Skipping summary for entry {entry.id}: No valid PDF or HTML link found in raw metadata.")
+            logger.warning(f"Skipping summary for entry {entry.id}: No valid PDF or HTML link found.")
             return False
 
         request = AIRequest(
             system_prompt=self._build_prompt(),
-            user_prompt=f"Please deeply analyze this research paper: {document_link}",
+            user_prompt=self._build_user_prompt(),
+            document_url=document_link,
             temperature=0.2
         )
 
@@ -45,7 +46,11 @@ class ResearchSummaryService:
             if summary:
                 entry.deep_research_summary = summary
                 await self.db.commit()
+                logger.info(f"Successfully generated deep summary for entry {entry_id}")
                 return True
+            else:
+                logger.warning(f"Failed to extract JSON body for entry {entry_id}")
+                return False
 
         except Exception as e:
             logger.error(f"Failed to generate summary for entry {entry_id}: {e}")
@@ -55,26 +60,43 @@ class ResearchSummaryService:
     def _document_link(self, raw: dict | None) -> str | None:
         """
         Extracts the best available resource link from raw metadata.
-        Prioritizes application/pdf and falls back to text/html.
+        Handles variations in JSON structure, missing arrays, and minimal data.
         """
         if not raw:
             return None
 
-        links = raw.get("links", [])
+        # 1. Handle variations in the root key name
+        links = raw.get("links") or raw.get("link") or []
 
+        # Guard against a scenario where a single link is parsed as a dict instead of a list
+        if isinstance(links, dict):
+            links = [links]
+
+        # 2. Helper to safely extract keys whether they have an '@' prefix or not
+        def get_attr(item: dict, key: str):
+            return item.get(key) or item.get(f"@{key}")
+
+        # 3. Try to find the PDF link first
         pdf_link = next(
-            (link["href"] for link in links if link.get("type") == "application/pdf"),
+            (get_attr(link, "href") for link in links if get_attr(link, "type") == "application/pdf"),
             None
         )
         if pdf_link:
             return pdf_link
 
+        # 4. Fall back to the HTML link
         html_link = next(
-            (link["href"] for link in links if link.get("type") == "text/html"),
+            (get_attr(link, "href") for link in links if get_attr(link, "type") == "text/html"),
             None
         )
         if html_link:
             return html_link
+
+        # 5. Last resort: If the 'links' array is completely missing, 
+        # fall back to the 'id' field if it contains a valid URL.
+        raw_id = raw.get("id")
+        if raw_id and isinstance(raw_id, str) and raw_id.startswith("http"):
+            return raw_id
 
         return None
 
@@ -100,47 +122,40 @@ class ResearchSummaryService:
             logger.debug(f"Raw content was: {content}")
             return None
 
+    def _build_user_prompt(self) -> str:
+        return """
+Step 1: The Extraction. Do not summarize or analyze it yet. First, extract the core technical contribution, the specific mathematical lemma used to prove the result, and the explicit experimental setup. List these as bullet points.
+
+Step 2: The Reasoning. Now that you have those facts, explain the significance of the mathematical lemma you extracted in relation to quantum matrix math.
+"""
+
     def _build_prompt(self) -> str:
         return """
 You are an elite AI research analyst and science communicator.
+Your task: Deeply read and understand the attached research paper and generate a structured, high-value explainer.
 
-Your task: Deeply read and understand the attached research PDF and generate a structured, high-value explainer.
+Audience: Curious, intelligent founders and professionals — not domain experts.
 
-Audience:
-    - Curious, intelligent founders and professionals;
-    - Not technical experts, but can understand advanced concepts when clearly explained;
+Primary mission: Explain the paper’s ideas, meaning, and significance. 
+Do NOT repeat title, authors, arXiv ID, year, or metadata.
 
-Primary mission: Explain the paper’s ideas, meaning, and significance — NOT the metadata. Do NOT repeat title, authors, arXiv ID, year, or publication info. We already store those separately.
+Tone: Clear, sharp, human, insightful (Karpathy + Paul Graham style).
 
-Tone:
-    - Clear, sharp, human, insightful;
-    - Like Karpathy + Paul Graham + Ali Abdaal;
-    - No fluff, no hype, no academic filler;
-    - Metaphors and intuitive explanations welcome;
-    - Convey meaning and understanding, not jargon;
-
-CONTENT YOU MUST PRODUCE (as narrative with brief bold section headers inside text):
-    1. 3–5 core insights (executive brief);
-    2. Core idea and motivation — explained simply;
-    3. Why this research matters now (context & importance);
-    4. Key innovations & contributions;
-    5. Method — explained step-by-step in plain language;
-    6. Math/theory intuition (no formulas — explain what they *mean*);
-    7. Experiments and evaluation — what was tested and why it matters;
-    8. Key results & what they prove (plain English significance);
-    9. Limitations/where it may fail;
-    10. Real-world impact and applications;
-    11. Future work/open questions;
-    12. Closing takeaway — 2-3 sentences summarizing the big picture;
+CONTENT STRUCTURE (use brief bold section headers):
+1. 3–5 core insights (executive brief)
+2. Core idea and motivation — explained simply
+3. Why this research matters now
+4. Key innovations & contributions
+5. Method — explained step-by-step in plain language
+6. Math/theory intuition (no formulas — explain meaning)
+7. Experiments and evaluation
+8. Key results & what they prove
+9. Limitations
+10. Real-world impact and applications
+11. Future work / open questions
+12. Closing takeaway (2-3 sentences)
 
 Output rules:
-    - DO NOT repeat metadata (title, authors, arXiv ID, etc.);
-    - NO backticks;
-    - Make the text feel like a human expert teaching;
-
-Return only valid JSON in this format:
-
-{ "body": "content_here" }
-
-Begin your analysis now.
+- Return ONLY valid JSON: { "body": "full narrative here" }
+- No backticks, no markdown code blocks.
 """
