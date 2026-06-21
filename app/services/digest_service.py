@@ -165,15 +165,17 @@ class DigestService:
                 f"[DigestService] [{index}/{len(entries_with_no_summary)}] Generating summary for entry_id={entry.id}, arxiv_id={entry.arxiv_id}"
             )
             try:
-                success = await research_summary_service.generate_entry_summary(entry.id)
-                if success:
+                result = await research_summary_service.execute(entry.arxiv_id)
+                if result.status in {"generated", "already_exists"}:
                     success_count += 1
                     logger.info(
-                        f"[DigestService] Summary generated for entry_id={entry.id}, arxiv_id={entry.arxiv_id}"
+                        "[DigestService] Summary available for digest - "
+                        f"entry_id={entry.id}, arxiv_id={entry.arxiv_id}, status='{result.status}'"
                     )
                 else:
                     logger.warning(
-                        f"[DigestService] Summary skipped or failed for entry_id={entry.id}, arxiv_id={entry.arxiv_id}"
+                        "[DigestService] Summary unavailable for digest - "
+                        f"entry_id={entry.id}, arxiv_id={entry.arxiv_id}, status='{result.status}'"
                     )
             except Exception as exc:
                 logger.exception(
