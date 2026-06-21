@@ -1,7 +1,7 @@
+import logging
 from datetime import datetime, timezone, timedelta
 from dateutil import parser as dateparse
 import httpx
-import hashlib
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,38 +9,42 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import ArxivEntry, ExternalQueryState
 
 
-class ArxivService:
-    RATE_LIMIT_HOURS = 23
-    ARXIV_URL = "https://export.arxiv.org/api/query"
+logger = logging.getLogger(__name__)
 
+
+class ArxivService:
+    RATE_LIMIT_HOURS = 3
+    ARXIV_URL = "https://export.arxiv.org/api/query"
 
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def get_digest(self, query: str, max_results: int = 10, force_refresh: bool = False):
+        logger.info(
+            f"[ArxivService] Starting ArXiv lookup for query='{query}', max_results={max_results}, force_refresh={force_refresh}"
+        )
 
-    async def get_digest(self, query: str, max_results: int = 10):
-        query_hash = self._hash_query(query)
+        state = await self._get_state(query)
 
-        state = await self._get_state(query_hash)
-
-        if state and not self._is_stale(state.last_fetched_at):
+        if not force_refresh and state and not self._is_stale(state.last_fetched_at):
+            logger.info(f"[ArxivService] Cache hit for query='{query}'. Returning cached entries.")
             entries = await self._get_cached_entries()
             return {
                 "from_cache": True,
                 "entries": entries
             }
 
+        logger.info(f"[ArxivService] Fetching fresh data from ArXiv for query='{query}'.")
         xml = await self._fetch_arxiv(query, max_results)
         entries = self._parse_xml(xml)
 
         new_entries = await self._save_entries(entries)
-        await self._update_state(query_hash, len(new_entries))
+        await self._update_state(query, len(new_entries))
 
         return {
             "from_cache": False,
             "entries": entries
         }
-
 
     async def _fetch_arxiv(self, query: str, max_results: int):
         params = {
@@ -51,17 +55,34 @@ class ArxivService:
             "max_results": max_results
         }
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(self.ARXIV_URL, params=params)
-            response.raise_for_status()
-            return response.text
-
+        logger.info(
+            f"[ArxivService] Calling ArXiv API endpoint='{self.ARXIV_URL}' with query='{query}', max_results={max_results}"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(self.ARXIV_URL, params=params)
+                response.raise_for_status()
+                logger.info(
+                    f"[ArxivService] ArXiv API response status={response.status_code} for query='{query}'"
+                )
+                return response.text
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                f"[ArxivService] ArXiv API returned error status={exc.response.status_code} for query='{query}'"
+            )
+            raise
+        except httpx.RequestError as exc:
+            logger.error(
+                f"[ArxivService] Network error while calling ArXiv API for query='{query}': {exc}"
+            )
+            raise
 
     def _parse_xml(self, xml_data: str):
         import xmltodict
 
         json_data = xmltodict.parse(xml_data, force_list=("entry",))
         entries = json_data["feed"].get("entry", [])
+        logger.info(f"[ArxivService] Parsed {len(entries)} raw entries from XML response.")
 
         now = datetime.now(timezone.utc)
         threshold = now - timedelta(hours=94)
@@ -79,6 +100,7 @@ class ArxivService:
                 continue
 
             if published_dt < threshold:
+                logger.debug(f"[ArxivService] Filtering out old entry: {published_dt} (threshold: {threshold})")
                 continue
 
             authors_field = e.get("author", [])
@@ -113,15 +135,15 @@ class ArxivService:
                 "raw": e
             })
 
-        return result
+        logger.info(f"[ArxivService] Returning {len(result)} valid entries after date filtering.")
 
+        return result
 
     def _extract_arxiv_id(self, entry_id: str) -> str:
         if not entry_id:
             raise ValueError("Missing arxiv entry id")
 
         return entry_id.rstrip("/").split("/")[-1]
-
 
     async def _save_entries(self, entries):
         new_entries = []
@@ -151,20 +173,18 @@ class ArxivService:
         await self.db.commit()
         return new_entries
 
-
-    async def _get_state(self, query_hash: str):
+    async def _get_state(self, query: str):
         result = await self.db.execute(
             select(ExternalQueryState)
             .where(
                 ExternalQueryState.source == "arxiv",
-                ExternalQueryState.query_hash == query_hash
+                ExternalQueryState.query == query
             )
         )
         return result.scalar_one_or_none()
 
-
-    async def _update_state(self, query_hash: str, count: int):
-        state = await self._get_state(query_hash)
+    async def _update_state(self, query: str, count: int):
+        state = await self._get_state(query)
 
         now = datetime.now(timezone.utc)
 
@@ -174,14 +194,13 @@ class ArxivService:
         else:
             state = ExternalQueryState(
                 source="arxiv",
-                query_hash=query_hash,
+                query=query,
                 last_fetched_at=now,
                 last_success_count=count
             )
             self.db.add(state)
 
         await self.db.commit()
-
 
     async def _get_cached_entries(self):
         result = await self.db.execute(
@@ -204,10 +223,6 @@ class ArxivService:
             }
             for r in rows
         ]
-
-
-    def _hash_query(self, query: str) -> str:
-        return hashlib.sha256(query.encode()).hexdigest()
 
 
     def _is_stale(self, last_fetched_at: datetime) -> bool:
