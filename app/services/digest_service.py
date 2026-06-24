@@ -283,7 +283,7 @@ Here are the deep research summaries for the day:
         request = AIRequest(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            temperature=0.3
+            temperature=0.0
         )
 
         try:

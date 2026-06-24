@@ -79,7 +79,7 @@ class ResearchSummaryService:
             system_prompt=self._build_prompt(),
             user_prompt=self._build_user_prompt(),
             document_url=document_link,
-            temperature=0.2
+            temperature=0.0
         )
 
         try:
